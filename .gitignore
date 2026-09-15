@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+portfolio/*.log
+portfolio/*.jsonl
+portfolio/*.json
+portfolio/*.png
+portfolio/*.txt
+*.save
