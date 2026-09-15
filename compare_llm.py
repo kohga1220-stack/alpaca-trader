@@ -21,7 +21,8 @@ from scheduler import (
 DEFAULT_SYMBOLS = ["NVDA", "GOOGL", "JNJ", "KO", "VZ"]
 
 
-def build_prompt(symbol, df, account, positions, per, eps, net_margin, roe):
+def build_prompt(symbol, df, account, positions, per, eps, net_margin, roe,
+                  pre_score=None, pre_reasons=None):
     last = df.iloc[-1]
     pos = next((p for p in positions if p.symbol == symbol), None)
     pos_info = (f"{pos.qty}株保有 取得${float(pos.avg_entry_price):.2f} "
@@ -36,6 +37,7 @@ def build_prompt(symbol, df, account, positions, per, eps, net_margin, roe):
         pos_info=pos_info, skills=SKILLS,
         symbol_desc=ALL_SYMBOLS.get(symbol, ""),
         per=per, eps=eps, net_margin=net_margin, roe=roe, df=df,
+        pre_score=pre_score, pre_reasons=pre_reasons,
     )
 
 
@@ -71,8 +73,9 @@ def main():
         try:
             df = get_bars(symbol)
             per, eps, nm, roe = fetch_fundamentals(symbol)
-            score, _ = pre_filter_score(df, net_margin=nm, roe=roe)
-            prompt = build_prompt(symbol, df, account, positions, per, eps, nm, roe)
+            score, score_reasons = pre_filter_score(df, net_margin=nm, roe=roe)
+            prompt = build_prompt(symbol, df, account, positions, per, eps, nm, roe,
+                                   pre_score=score, pre_reasons=score_reasons)
         except Exception as e:
             print(f"[{symbol}] データ取得失敗: {e}")
             continue

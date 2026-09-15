@@ -9,7 +9,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from prompt_builder import build_analysis_prompt, load_skills
-from scheduler import fetch_fundamentals
+from scheduler import fetch_fundamentals, cancel_open_orders, get_live_qty
 from llm_client import decide, PROVIDER
 from datetime import datetime, timedelta
 
@@ -103,14 +103,34 @@ def analyze(symbol, df, account, positions):
 
 # ── 注文実行 ──────────────────────────────────
 def execute(symbol, action, qty):
-    if action in ("BUY", "SELL") and qty > 0:
-        order = trade.submit_order(MarketOrderRequest(
-            symbol=symbol,
-            qty=qty,
-            side=OrderSide.BUY if action == "BUY" else OrderSide.SELL,
-            time_in_force=TimeInForce.GTC
-        ))
-        print(f"  → 注文送信完了 ID: {order.id}")
+    if action not in ("BUY", "SELL") or qty <= 0:
+        return
+
+    if action == "SELL":
+        # 【空売り防止】ブラケット注文が残っているとheld_for_ordersになるため先にキャンセルし、
+        # 注文直前にライブの保有数を再取得してロング保有数を上限にクランプする。
+        # これをしないと、短時間に複数回SELLを送信した場合に保有超過で空売りになる
+        # （例: 別プロセスや連続実行でPGが-89株のショートになった事故）。
+        cancelled = cancel_open_orders(symbol)
+        if cancelled > 0:
+            print(f"  → {cancelled}件の未約定注文をキャンセル後にSELL実行")
+            time.sleep(0.5)
+
+        live_qty = get_live_qty(symbol)
+        if live_qty <= 0:
+            print(f"  → [{symbol}] 保有なし(live={live_qty}) — SELLをスキップ（空売り防止）")
+            return
+        if qty > live_qty:
+            print(f"  → [{symbol}] 売却数を {qty}→{live_qty} に調整（実保有数に合わせて空売り防止）")
+            qty = live_qty
+
+    order = trade.submit_order(MarketOrderRequest(
+        symbol=symbol,
+        qty=qty,
+        side=OrderSide.BUY if action == "BUY" else OrderSide.SELL,
+        time_in_force=TimeInForce.GTC
+    ))
+    print(f"  → 注文送信完了 ID: {order.id}")
 
 # ── メイン ────────────────────────────────────
 if __name__ == "__main__":

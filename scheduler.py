@@ -159,6 +159,7 @@ def execute_sell(symbol, qty):
         return None
 
 PRE_FILTER_THRESHOLD = 75  # これ未満はAPIを呼ばずルールベースHOLD
+AUTO_BUY_THRESHOLD   = 85  # これ以上はLLMを呼ばずルールベースで直接BUY
 COOLDOWN_HOURS = 6         # 一度売買した銘柄はこの時間内は再取引しない（往復売買防止）
 
 
@@ -320,7 +321,8 @@ def fetch_fundamentals(symbol: str) -> tuple[float | None, float | None, float |
 
 
 def analyze(symbol, df, account, positions,
-            per=None, eps=None, net_margin=None, roe=None):
+            per=None, eps=None, net_margin=None, roe=None,
+            pre_score=None, pre_reasons=None):
     last     = df.iloc[-1]
     pos      = next((p for p in positions if p.symbol == symbol), None)
     pos_info = (f"{pos.qty}株保有 取得${float(pos.avg_entry_price):.2f} "
@@ -342,6 +344,8 @@ def analyze(symbol, df, account, positions,
         net_margin    = net_margin,
         roe           = roe,
         df            = df,
+        pre_score     = pre_score,
+        pre_reasons   = pre_reasons,
     )
 
     # LLMバックエンド（Claude/PLaMo）はllm_client.decide()が吸収する
@@ -393,29 +397,42 @@ def hourly_run():
             #         既保有でBUYしか出ない高スコア銘柄はAPIを呼んでも注文不可なので、
             #         売りシグナルがなければスキップしてAPI消費を抑える。
             pre_score, pre_reasons = pre_filter_score(df, net_margin=net_margin, roe=roe)
+            price = float(df.iloc[-1]["close"])
+
             if pos is None:
                 if pre_score < PRE_FILTER_THRESHOLD:
                     log.info(f"[{symbol}] HOLD(ルールベース スコア{pre_score}<{PRE_FILTER_THRESHOLD}) — API呼び出しなし")
                     time.sleep(0.1)
                     continue
-                log.info(f"[{symbol}] スコア{pre_score}({', '.join(pre_reasons)}) → Claude最終判断へ")
+
+                if pre_score >= AUTO_BUY_THRESHOLD:
+                    # スコアが十分高い場合はLLMを呼ばずルールベースで直接BUYする
+                    # （LLMが同じ根拠から再判断すると保守的にHOLD/低確信度へ寄る傾向があるため）
+                    action, conf, reason = "BUY", pre_score, ", ".join(pre_reasons)
+                    log.info(f"[{symbol}] スコア{pre_score}≥{AUTO_BUY_THRESHOLD} → ルールベース直接BUY（LLM呼び出しなし）")
+                else:
+                    log.info(f"[{symbol}] スコア{pre_score}({', '.join(pre_reasons)}) → LLM最終判断へ")
+                    result = analyze(symbol, df, account, positions,
+                                      per=per, eps=eps, net_margin=net_margin, roe=roe,
+                                      pre_score=pre_score, pre_reasons=pre_reasons)
+                    action = result.get("action", "HOLD")
+                    conf   = result.get("confidence", 0)
+                    reason = result.get("reason", "")
+                    log.info(f"[{symbol}] {action} conf={conf}% | {reason}")
             else:
                 sell_sig, sell_reason = sell_signal_check(df)
                 if not sell_sig:
                     log.info(f"[{symbol}] 保有中・売りシグナルなし — API呼び出しなし")
                     time.sleep(0.1)
                     continue
-                log.info(f"[{symbol}] 保有中・売りシグナル({sell_reason}) → Claude最終判断へ")
+                log.info(f"[{symbol}] 保有中・売りシグナル({sell_reason}) → LLM最終判断へ")
+                result = analyze(symbol, df, account, positions,
+                                  per=per, eps=eps, net_margin=net_margin, roe=roe)
+                action = result.get("action", "HOLD")
+                conf   = result.get("confidence", 0)
+                reason = result.get("reason", "")
+                log.info(f"[{symbol}] {action} conf={conf}% | {reason}")
             # ──────────────────────────────────────────────────────────
-
-            result   = analyze(symbol, df, account, positions,
-                               per=per, eps=eps, net_margin=net_margin, roe=roe)
-            action   = result.get("action", "HOLD")
-            conf     = result.get("confidence", 0)
-            reason   = result.get("reason", "")
-            price    = float(df.iloc[-1]["close"])
-
-            log.info(f"[{symbol}] {action} conf={conf}% | {reason}")
 
             if conf < MIN_CONFIDENCE:
                 log.info(f"  → 確信度不足({conf}%) — スキップ")

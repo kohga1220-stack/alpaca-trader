@@ -52,9 +52,23 @@ def build_analysis_prompt(
     symbol_desc="",
     per=None, eps=None, net_margin=None, roe=None,
     df=None,
+    pre_score=None, pre_reasons=None,
 ) -> str:
     domain_skill = skills.get("high_risk" if risk_type == "HIGH_RISK" else "low_risk", "")
     definitions  = skills.get("definitions", "")
+
+    pre_score_block = ""
+    if pre_score is not None:
+        reasons_str = " / ".join(pre_reasons) if pre_reasons else "なし"
+        pre_score_block = f"""
+【Python事前スコアリング（参考値）】
+スコア: {pre_score}点 / 加点根拠: {reasons_str}
+※ definitions.mdの加点ルールに沿ってPythonが機械的に算出した参考値です。
+　あなた自身のテクニカル・ファンダメンタルズ分析と統合したうえで最終 confidence を決めてください。
+　事前スコアの根拠データ（トレンド・RSI・ファンダ等）が実際に妥当であれば、それを無視して
+　不必要に confidence を切り下げないこと。逆に、事前スコアと矛盾する材料（急な悪材料など）が
+　【分析対象データ】に見て取れる場合は、その根拠に基づいて confidence を下げて構いません。
+"""
 
     fundamentals_block = ""
     if any(v is not None for v in [per, eps, net_margin, roe]):
@@ -88,7 +102,7 @@ RSI(14): {last['rsi']:.1f}
 口座残高: ${account_cash:.2f} / 総資産: ${account_value:.2f}
 保有: {pos_info}
 {fundamentals_block}
-
+{pre_score_block}
 直近5日:
 {hist}
 
